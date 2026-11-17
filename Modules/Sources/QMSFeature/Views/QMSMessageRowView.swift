@@ -253,26 +253,18 @@ struct QMSMessageRowView: View {
     private var attachmentsView: some View {
         let hasText = !message.text.isEmpty
         let padding = attachmentPadding
-        let usesPlainTrailingTimestamp = !hasText
-            && QMSAttachmentsGrid.Metrics.hasTrailingEmptySlot(for: message.attachments.count)
-        let showsCapsuleTimestamp = !hasText && !usesPlainTrailingTimestamp
+        let showsCapsuleTimestamp = !hasText
 
         return QMSAttachmentsGrid(
             attachments: message.attachments,
             roundsSingleAttachment: hasText,
-            reservesBottomTimestamp: showsCapsuleTimestamp,
             onTap: onTapAttachment
         )
         .padding(.top, padding)
         .padding(.horizontal, padding)
         .padding(.bottom, hasText ? 0 : padding)
         .overlay(alignment: .bottomTrailing) {
-            if usesPlainTrailingTimestamp {
-                trailingSlotTimeView
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 5)
-                    .allowsHitTesting(false)
-            } else if showsCapsuleTimestamp {
+            if showsCapsuleTimestamp {
                 capsuleTimeView
                     .padding(padding + 4)
                     .allowsHitTesting(false)
@@ -325,14 +317,6 @@ struct QMSMessageRowView: View {
             .foregroundStyle(timeColor)
     }
 
-    private var trailingSlotTimeView: some View {
-        let timeColor = isCurrentUser ? theme.colors.messageMyTimeText : theme.colors.messageFriendTimeText
-        return Text(timeText)
-            .font(.caption2)
-            .lineLimit(1)
-            .foregroundStyle(timeColor)
-    }
-
     private var capsuleTimeView: some View {
         Text(timeText)
             .font(.caption2)
@@ -378,12 +362,20 @@ struct QMSMessageRowView: View {
 private struct QMSAttachmentsGrid: View {
 
     enum Metrics {
-        static let maxVisibleCount = 6
-        static let maxColumns = 3
+        static let maxColumns = 4
+        static let maxRows = 3
         static let singleSize = CGSize(width: 132, height: 108)
-        static let tileSize: CGFloat = 72
+        static let tileSize: CGFloat = 60
         static let spacing: CGFloat = 4
-        static let tileCornerRadius: CGFloat = 9
+        static let tileCornerRadius: CGFloat = 8
+
+        static var gridWidth: CGFloat {
+            CGFloat(maxColumns) * tileSize + CGFloat(maxColumns - 1) * spacing
+        }
+
+        static var gridHeight: CGFloat {
+            CGFloat(maxRows) * tileSize + CGFloat(maxRows - 1) * spacing
+        }
 
         static func gridWidth(for attachmentCount: Int) -> CGFloat {
             switch attachmentCount {
@@ -391,91 +383,61 @@ private struct QMSAttachmentsGrid: View {
                 return 0
             case 1:
                 return singleSize.width
+            case 2, 3:
+                return CGFloat(attachmentCount) * tileSize
+                    + CGFloat(attachmentCount - 1) * spacing
             default:
-                let visibleCount = min(attachmentCount, maxVisibleCount)
-                let columns = min(visibleCount, maxColumns)
-                return CGFloat(columns) * tileSize + CGFloat(columns - 1) * spacing
+                return gridWidth
             }
         }
-
-        static func hasTrailingEmptySlot(for attachmentCount: Int) -> Bool {
-            let visibleCount = min(attachmentCount, maxVisibleCount)
-            return visibleCount > maxColumns && !visibleCount.isMultiple(of: maxColumns)
-        }
     }
 
-    private struct Row: Identifiable {
-        let index: Int
-        let items: [ExyteChat.Attachment]
-
-        var id: String {
-            "\(index)-" + items.map(\.id).joined(separator: "+")
-        }
-    }
-
+    private let attachments: [ExyteChat.Attachment]
     private let single: ExyteChat.Attachment?
-    private let rows: [Row]
     private let roundsSingleAttachment: Bool
-    private let reservesBottomTimestamp: Bool
-    private let hiddenCountText: String?
-    private let hiddenOverlayAttachmentId: String?
     private let onTap: (ExyteChat.Attachment) -> Void
 
     init(
         attachments: [ExyteChat.Attachment],
         roundsSingleAttachment: Bool,
-        reservesBottomTimestamp: Bool,
         onTap: @escaping (ExyteChat.Attachment) -> Void
     ) {
+        self.attachments = attachments
         self.roundsSingleAttachment = roundsSingleAttachment
-        self.reservesBottomTimestamp = reservesBottomTimestamp
         self.onTap = onTap
-
-        guard !attachments.isEmpty else {
-            self.single = nil
-            self.rows = []
-            self.hiddenCountText = nil
-            self.hiddenOverlayAttachmentId = nil
-            return
-        }
-
-        if attachments.count == 1 {
-            self.single = attachments[0]
-            self.rows = []
-            self.hiddenCountText = nil
-            self.hiddenOverlayAttachmentId = nil
-            return
-        }
-
-        let visible = Array(attachments.prefix(Metrics.maxVisibleCount))
-        let overflowCount = attachments.count - Metrics.maxVisibleCount
-        if overflowCount > 0 {
-            self.hiddenCountText = "+\(overflowCount)"
-            self.hiddenOverlayAttachmentId = visible.last?.id
-        } else {
-            self.hiddenCountText = nil
-            self.hiddenOverlayAttachmentId = nil
-        }
-
-        self.single = nil
-        self.rows = stride(from: 0, to: visible.count, by: Metrics.maxColumns)
-            .enumerated()
-            .map { rowIndex, start in
-                let end = min(start + Metrics.maxColumns, visible.count)
-                return Row(index: rowIndex, items: Array(visible[start..<end]))
-            }
+        self.single = attachments.count == 1 ? attachments[0] : nil
     }
 
     var body: some View {
         if let single {
             singleAttachmentView(single)
+        } else if attachments.count <= 3 {
+            HStack(spacing: Metrics.spacing) {
+                ForEach(attachments, id: \.id) { attachment in
+                    gridTile(attachment)
+                }
+            }
         } else {
-            VStack(alignment: .leading, spacing: Metrics.spacing) {
-                ForEach(rows) { row in
-                    gridRow(row)
+            scrollableGrid
+        }
+    }
+
+    private var scrollableGrid: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHGrid(
+                rows: Array(
+                    repeating: GridItem(.fixed(Metrics.tileSize), spacing: Metrics.spacing),
+                    count: Metrics.maxRows
+                ),
+                spacing: Metrics.spacing
+            ) {
+                ForEach(attachments, id: \.id) { attachment in
+                    gridTile(attachment)
                 }
             }
         }
+        .frame(width: Metrics.gridWidth, height: Metrics.gridHeight)
+        .scrollIndicators(.hidden)
     }
 
     private func singleAttachmentView(_ attachment: ExyteChat.Attachment) -> some View {
@@ -494,14 +456,6 @@ private struct QMSAttachmentsGrid: View {
         )
     }
 
-    private func gridRow(_ row: Row) -> some View {
-        HStack(spacing: Metrics.spacing) {
-            ForEach(row.items, id: \.id) { attachment in
-                gridTile(attachment)
-            }
-        }
-    }
-
     private func gridTile(_ attachment: ExyteChat.Attachment) -> some View {
         AttachmentCell(
             attachment: attachment,
@@ -511,22 +465,6 @@ private struct QMSAttachmentsGrid: View {
             onTap(tapped)
         }
         .clipped()
-        .overlay {
-            if attachment.id == hiddenOverlayAttachmentId, let hiddenCountText {
-                moreCountOverlay(hiddenCountText)
-            }
-        }
         .clipShape(RoundedRectangle(cornerRadius: Metrics.tileCornerRadius))
-    }
-
-    private func moreCountOverlay(_ text: String) -> some View {
-        ZStack {
-            Color.black.opacity(0.55)
-            Text(text)
-                .font(.subheadline.weight(.bold))
-                .foregroundStyle(.white)
-                .offset(y: reservesBottomTimestamp ? -8 : 0)
-        }
-        .allowsHitTesting(false)
     }
 }
