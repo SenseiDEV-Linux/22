@@ -617,7 +617,15 @@ extension APIClient: DependencyKey {
                 )
                 let response = try await api.send(command)
                 let status = Int(response.getResponseStatus())!
-                return status == 0
+                let isSuccess = status == 0
+                if isSuccess, request.action == .delete, request.type == .topic {
+                    @Shared(.userSession) var userSession
+                    if let userId = userSession?.userId {
+                        @Shared(.pinnedFavorites) var pinnedFavorites
+                        $pinnedFavorites.withLock { $0.unpin(topicId: request.id, userId: userId) }
+                    }
+                }
+                return isSuccess
             },
             
             notifyFavorite: { request in

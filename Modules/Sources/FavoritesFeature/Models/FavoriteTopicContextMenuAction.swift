@@ -7,7 +7,8 @@
 
 import Models
 
-public enum FavoriteTopicContextMenuAction {
+public enum FavoriteTopicContextMenuAction: Sendable {
+    case setPinned(Bool)
     case goToFirst
     case goToEnd
     case notify(Int, FavoriteNotifyType)

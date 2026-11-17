@@ -18,6 +18,7 @@ public struct TopicRow: View {
     public let title: UITitleType
     public let date: Date
     public let username: String
+    public let isPinned: Bool
     public let isMoved: Bool
     public let isClosed: Bool
     public let isUnread: Bool
@@ -31,6 +32,7 @@ public struct TopicRow: View {
         title: UITitleType,
         date: Date,
         username: String,
+        isPinned: Bool = false,
         isMoved: Bool = false,
         isClosed: Bool,
         isUnread: Bool,
@@ -41,6 +43,7 @@ public struct TopicRow: View {
         self.title = title
         self.date = date
         self.username = username
+        self.isPinned = isPinned
         self.isMoved = isMoved
         self.isClosed = isClosed
         self.isUnread = isUnread
@@ -87,13 +90,22 @@ public struct TopicRow: View {
                 Spacer(minLength: 0)
                 
                 HStack(spacing: 0) {
+                    if isPinned {
+                        Image(systemSymbol: .pinFill)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 14, height: 14)
+                            .foregroundStyle(tintColor)
+                            .padding(.trailing, iconTrailingPadding(hasNextIcon: hasHatUpdateTracking || isClosed || isMoved))
+                    }
+                    
                     if hasHatUpdateTracking {
                         Image(systemSymbol: .bellFill)
                             .resizable()
                             .scaledToFit()
                             .frame(width: 16, height: 16)
                             .foregroundStyle(isHatUpdated ? .green : Color(.Main.greyAlpha))
-                            .padding(.trailing, isUnread ? -2 : 12)
+                            .padding(.trailing, iconTrailingPadding(hasNextIcon: isClosed || isMoved))
                     }
                     
                     if isClosed {
@@ -102,7 +114,7 @@ public struct TopicRow: View {
                             .scaledToFit()
                             .frame(width: 16, height: 16)
                             .foregroundStyle(Color(.Labels.secondary))
-                            .padding(.trailing, isUnread ? -2 : 12)
+                            .padding(.trailing, iconTrailingPadding(hasNextIcon: isMoved))
                     }
                     
                     if isMoved {
@@ -111,7 +123,7 @@ public struct TopicRow: View {
                             .scaledToFit()
                             .frame(width: 16, height: 16)
                             .foregroundStyle(Color(.Labels.secondary))
-                            .padding(.trailing, isUnread ? -2 : 12)
+                            .padding(.trailing, iconTrailingPadding(hasNextIcon: false))
                     }
                     
                     if isUnread {
@@ -138,6 +150,15 @@ public struct TopicRow: View {
         .buttonStyle(.plain)
         .frame(minHeight: 60)
     }
+    
+    // MARK: - Helpers
+    
+    private func iconTrailingPadding(hasNextIcon: Bool) -> CGFloat {
+        if hasNextIcon {
+            return 8
+        }
+        return isUnread ? -2 : 12
+    }
 }
 
 // MARK: - Previews
@@ -157,6 +178,7 @@ public struct TopicRow: View {
             title: .plain("ForPDA [iOS]"),
             date: .now,
             username: "subvertd",
+            isPinned: true,
             isClosed: false,
             isUnread: false,
             onAction: { print($0 ? "Unread tapped" : "Row tapped") }

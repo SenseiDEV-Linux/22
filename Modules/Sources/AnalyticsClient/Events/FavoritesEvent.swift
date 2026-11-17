@@ -21,6 +21,7 @@ public enum FavoritesEvent: Event {
     
     case goToFirst(Int)
     case goToEnd(Int)
+    case setPinned(Int, Bool)
     case notify(Int, Int, String)
     case notifyHatUpdate(Int)
     
@@ -54,6 +55,9 @@ public enum FavoritesEvent: Event {
             
         case let .goToEnd(id):
             return ["id": String(id)]
+            
+        case let .setPinned(id, isPinned):
+            return ["id": String(id), "isPinned": isPinned.description]
             
         case let .notify(id, flag, type):
             return ["id": String(id), "flag": String(flag), "type": type]

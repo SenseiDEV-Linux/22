@@ -266,6 +266,7 @@ let project = Project(
                     .Internal.NotificationsClient,
                     .Internal.PageNavigationFeature,
                     .Internal.PasteboardClient,
+                    .Internal.PersistenceKeys,
                     .Internal.SharedUI,
                     .Internal.TCAExtensions,
                     .Internal.ToastClient,

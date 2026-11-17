@@ -45,3 +45,12 @@ extension SharedKey where Self == FileStorageKey<PostDraftsCache>.Default {
         return Self[.fileStorage(url), default: PostDraftsCache.default]
     }
 }
+
+// MARK: - Pinned Favorites
+
+extension SharedKey where Self == FileStorageKey<PinnedFavorites>.Default {
+    public static var pinnedFavorites: Self {
+        let url = URL.documentsDirectory.appending(component: "PinnedFavorites.json")
+        return Self[.fileStorage(url), default: PinnedFavorites.default]
+    }
+}

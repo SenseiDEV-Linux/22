@@ -15,6 +15,22 @@ import Models
 @ViewAction(for: FavoritesFeature.self)
 public struct FavoritesScreen: View {
     
+    // MARK: - Section Kind
+    
+    private enum SectionKind {
+        case pinned
+        case important
+        case regular
+        
+        var headerTitle: LocalizedStringKey {
+            switch self {
+            case .pinned: return LocalizedStringKey("Pinned")
+            case .important: return LocalizedStringKey("Important")
+            case .regular: return LocalizedStringKey("Topics / Forums")
+            }
+        }
+    }
+    
     // MARK: - Properties
     
     @Perception.Bindable public var store: StoreOf<FavoritesFeature>
@@ -49,11 +65,17 @@ public struct FavoritesScreen: View {
                     EmptyFavorites()
                 } else if !store.isLoading {
                     List {
-                        if !store.favoritesImportant.isEmpty {
-                            FavoritesSection(favorites: store.favoritesImportant, important: true)
+                        if !store.favoritesPinned.isEmpty {
+                            FavoritesSection(favorites: store.favoritesPinned, kind: .pinned)
                         }
                         
-                        FavoritesSection(favorites: store.favorites, important: false)
+                        if !store.favoritesImportant.isEmpty {
+                            FavoritesSection(favorites: store.favoritesImportant, kind: .important)
+                        }
+                        
+                        if !store.favorites.isEmpty || shouldShowInlineNavigation {
+                            FavoritesSection(favorites: store.favorites, kind: .regular)
+                        }
                     }
                     .scrollContentBackground(.hidden)
                     ._inScrollContentDetector(isEnabled: shouldShowFloatingNavigation, state: $navigationMinimized)
@@ -77,6 +99,7 @@ public struct FavoritesScreen: View {
                     .padding(.bottom, 8)
                 }
             }
+            .animation(.default, value: store.favoritesPinned)
             .animation(.default, value: store.favoritesImportant)
             .animation(.default, value: store.favorites)
             .toolbar {
@@ -137,7 +160,7 @@ public struct FavoritesScreen: View {
                     ContextButton(
                         text: LocalizedStringResource("Mark As Read", bundle: .module),
                         symbol: .checkmarkCircle
-                    ){
+                    ) {
                         send(.commonContextMenu(.markRead(favorite.id), favorite.isForum))
                     }
                 }
@@ -157,9 +180,18 @@ public struct FavoritesScreen: View {
     
     // MARK: - Topic Context Menu
     
-    private func TopicContextMenu(favorite: FavoriteInfo) -> some View {
+    private func TopicContextMenu(favorite: FavoriteInfo, isPinned: Bool) -> some View {
         VStack(spacing: 0) {
             Section {
+                ContextButton(
+                    text: isPinned
+                    ? LocalizedStringResource("Unpin", bundle: .module)
+                    : LocalizedStringResource("Pin", bundle: .module),
+                    symbol: isPinned ? .pinSlash : .pin
+                ) {
+                    send(.topicContextMenu(.setPinned(!isPinned), favorite))
+                }
+                
                 switch store.appSettings.topicOpeningStrategy {
                 case .first:
                     ContextButton(
@@ -218,72 +250,104 @@ public struct FavoritesScreen: View {
     // MARK: - Favorites Section
     
     @ViewBuilder
-    private func FavoritesSection(favorites: [FavoriteInfo], important: Bool) -> some View {
+    private func FavoritesSection(favorites: [FavoriteInfo], kind: SectionKind) -> some View {
+        let isPinned = kind == .pinned
         Section {
             if shouldShowInlineNavigation {
-                Navigation(isShown: !important)
+                Navigation(isShown: kind == .regular)
             }
             
             ForEach(Array(favorites.enumerated()), id: \.element) { index, favorite in
-                let radius: CGFloat = isLiquidGlass ? 24 : 10
-                Group {
-                    if favorite.isForum {
-                        ForumRow(
-                            title: favorite.topic.name,
-                            isUnread: favorite.topic.isUnread,
-                            onAction: {
-                                send(.favoriteTapped(favorite, showUnread: false))
-                            }
-                        )
-                    } else {
-                        TopicRow(
-                            title: .plain(favorite.topic.name),
-                            date: favorite.topic.lastPost.date,
-                            username: favorite.topic.lastPost.username,
-                            isClosed: favorite.topic.isClosed,
-                            isUnread: favorite.topic.isUnread,
-                            isHatUpdated: favorite.isHatUpdated,
-                            hasHatUpdateTracking: favorite.isNotifyHatUpdate,
-                            onAction: { unreadTapped in
-                                send(.favoriteTapped(favorite, showUnread: unreadTapped))
-                            }
-                        )
-                    }
-                }
-                .contextMenu {
-                    if !favorite.isForum {
-                        TopicContextMenu(favorite: favorite)
-                    }
-                    
-                    Section {
-                        CommonContextMenu(favorite: favorite)
-                    }
-                }
-                .listRowBackground(
-                    backgroundColors.tertiary
-                        .clipShape(
-                            .rect(
-                                topLeadingRadius: index == 0 ? radius : 0,
-                                bottomLeadingRadius: index == favorites.count - 1 ? radius : 0,
-                                bottomTrailingRadius: index == favorites.count - 1 ? radius : 0,
-                                topTrailingRadius: index == 0 ? radius : 0
-                            )
-                        )
+                FavoriteRow(
+                    favorite: favorite,
+                    isPinned: isPinned,
+                    isFirst: index == 0,
+                    isLast: index == favorites.count - 1
                 )
             }
             .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
             
-            if shouldShowInlineNavigation {
-                Navigation(isShown: !important)
+            if shouldShowInlineNavigation, !favorites.isEmpty {
+                Navigation(isShown: kind == .regular)
             }
         } header: {
             if !favorites.isEmpty {
-                Header(title: important
-                       ? LocalizedStringKey("Important")
-                       : LocalizedStringKey("Topics / Forums"))
+                Header(title: kind.headerTitle)
             }
         }
         .listRowBackground(backgroundColors.tertiary)
+    }
+    
+    // MARK: - Favorite Row
+    
+    @ViewBuilder
+    private func FavoriteRow(
+        favorite: FavoriteInfo,
+        isPinned: Bool,
+        isFirst: Bool,
+        isLast: Bool
+    ) -> some View {
+        let radius: CGFloat = isLiquidGlass ? 24 : 10
+        let swipeTitle: LocalizedStringKey = isPinned ? "Unpin" : "Pin"
+        Group {
+            if favorite.isForum {
+                ForumRow(
+                    title: favorite.topic.name,
+                    isUnread: favorite.topic.isUnread,
+                    onAction: {
+                        send(.favoriteTapped(favorite, showUnread: false))
+                    }
+                )
+            } else {
+                TopicRow(
+                    title: .plain(favorite.topic.name),
+                    date: favorite.topic.lastPost.date,
+                    username: favorite.topic.lastPost.username,
+                    isPinned: isPinned,
+                    isClosed: favorite.topic.isClosed,
+                    isUnread: favorite.topic.isUnread,
+                    isHatUpdated: favorite.isHatUpdated,
+                    hasHatUpdateTracking: favorite.isNotifyHatUpdate,
+                    onAction: { unreadTapped in
+                        send(.favoriteTapped(favorite, showUnread: unreadTapped))
+                    }
+                )
+            }
+        }
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            if !favorite.isForum {
+                Button {
+                    send(.topicContextMenu(.setPinned(!isPinned), favorite))
+                } label: {
+                    Label {
+                        Text(swipeTitle, bundle: .module)
+                    } icon: {
+                        Image(systemSymbol: isPinned ? .pinSlashFill : .pinFill)
+                    }
+                }
+                .tint(isPinned ? .gray : tintColor)
+            }
+        }
+        .contextMenu {
+            if !favorite.isForum {
+                TopicContextMenu(favorite: favorite, isPinned: isPinned)
+            }
+            
+            Section {
+                CommonContextMenu(favorite: favorite)
+            }
+        }
+        .listRowBackground(
+            backgroundColors.tertiary
+                .clipShape(
+                    .rect(
+                        topLeadingRadius: isFirst ? radius : 0,
+                        bottomLeadingRadius: isLast ? radius : 0,
+                        bottomTrailingRadius: isLast ? radius : 0,
+                        topTrailingRadius: isFirst ? radius : 0
+                    )
+                )
+        )
     }
     
     // MARK: - Navigation
@@ -322,7 +386,7 @@ public struct FavoritesScreen: View {
             .padding(.bottom, 4)
     }
     
-    //MARK: - Empty View
+    // MARK: - Empty View
     
     @ViewBuilder
     private func EmptyFavorites() -> some View {

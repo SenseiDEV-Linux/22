@@ -98,6 +98,7 @@ public struct TopicFeature: Reducer, Sendable {
     @ObservableState
     public struct State: Equatable {
         @Shared(.appSettings) var appSettings: AppSettings
+        @Shared(.pinnedFavorites) var pinnedFavorites: PinnedFavorites
         @Shared(.postDraftsCache) var postDraftsCache: PostDraftsCache
         @Shared(.userSession) var userSession: UserSession?
         var userSessionInfo: User?
@@ -752,6 +753,7 @@ public struct TopicFeature: Reducer, Sendable {
                 }
 
             case let .internal(.topicNavigationUpdated(topic)):
+                syncPinnedFavoriteIfNeeded(with: topic, state: &state)
                 return .run { [
                     isFirstPage = state.pageNavigation.isFirstPage,
                     topicPerPage = state.appSettings.topicPerPage,
@@ -861,6 +863,31 @@ public struct TopicFeature: Reducer, Sendable {
             await send(.pageNavigation(.update(count: postsCount, offset: targetOffset)))
             Task.cancel(id: CancelID.loading)
             await send(.internal(.loadTopic(targetOffset)))
+        }
+    }
+    
+    private func syncPinnedFavoriteIfNeeded(with topic: Topic, state: inout State) {
+        guard let userId = state.userSession?.userId,
+              state.pinnedFavorites.isPinned(topicId: topic.id, userId: userId)
+        else { return }
+        
+        if !topic.isFavorite {
+            state.$pinnedFavorites.withLock { $0.unpin(topicId: topic.id, userId: userId) }
+        } else if state.pageNavigation.isLastPage {
+            let lastPost = topic.posts.last(where: { !$0.isDeleted }).map {
+                TopicInfo.LastPost(date: $0.createdAt, userId: $0.author.id, username: $0.author.name)
+            }
+            state.$pinnedFavorites.withLock {
+                $0.updateFromReadTopic(
+                    topicId: topic.id,
+                    name: topic.name,
+                    description: topic.description,
+                    isClosed: topic.isClosed,
+                    postsCount: topic.postsCount,
+                    lastPost: lastPost,
+                    userId: userId
+                )
+            }
         }
     }
     

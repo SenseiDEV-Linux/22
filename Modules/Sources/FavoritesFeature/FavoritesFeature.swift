@@ -10,6 +10,7 @@ import ComposableArchitecture
 import PageNavigationFeature
 import APIClient
 import Models
+import PersistenceKeys
 import TCAExtensions
 import PasteboardClient
 import AnalyticsClient
@@ -21,6 +22,12 @@ public struct FavoritesFeature: Reducer, Sendable {
     
     public init() {}
     
+    // MARK: - Cancel ID
+    
+    private enum CancelID: Hashable {
+        case loadFavorites
+    }
+    
     // MARK: - Localizations
     
     public enum Localization {
@@ -28,6 +35,18 @@ public struct FavoritesFeature: Reducer, Sendable {
         static let markAsReadSuccess = LocalizedStringResource("Marked as read", bundle: .module)
         static let notifyTypeChanged = LocalizedStringResource("Notify type changed", bundle: .module)
         static let sortFiltersChanged = LocalizedStringResource("Sort filters are changed", bundle: .module)
+        static let topicPinned = LocalizedStringResource("Topic pinned", bundle: .module)
+        static let topicUnpinned = LocalizedStringResource("Topic unpinned", bundle: .module)
+    }
+    
+    // MARK: - Pinned Mutation
+    
+    public enum PinnedMutation: Sendable {
+        case delete(topicId: Int)
+        case setImportant(topicId: Int, isImportant: Bool)
+        case markRead(topicId: Int)
+        case markAllRead
+        case setNotify(topicId: Int, type: FavoriteNotifyType)
     }
     
     // MARK: - State
@@ -35,16 +54,19 @@ public struct FavoritesFeature: Reducer, Sendable {
     @ObservableState
     public struct State: Equatable {
         @Shared(.appSettings) var appSettings: AppSettings
+        @Shared(.pinnedFavorites) var pinnedFavorites: PinnedFavorites
         @Shared(.userSession) var userSession: UserSession?
         @Presents var sort: SortFeature.State?
         
-        public var favorites: [FavoriteInfo] = []
+        public var favoritesPinned: [FavoriteInfo] = []
         public var favoritesImportant: [FavoriteInfo] = []
+        public var favorites: [FavoriteInfo] = []
+        var lastLoadedFavorites: [FavoriteInfo] = []
         
         public var isLoading = true
         public var isRefreshing = false
         public var shouldShowEmptyState: Bool {
-            return !isLoading && favorites.isEmpty && favoritesImportant.isEmpty
+            return !isLoading && favoritesPinned.isEmpty && favoritesImportant.isEmpty && favorites.isEmpty
         }
         
         public var pageNavigation = PageNavigationFeature.State(type: .forum)
@@ -53,14 +75,16 @@ public struct FavoritesFeature: Reducer, Sendable {
             return userSession != nil
         }
         
-        
         public init(
             favorites: [FavoriteInfo] = [],
             favoritesImportant: [FavoriteInfo] = [],
+            favoritesPinned: [FavoriteInfo] = [],
             sort: SortFeature.State? = nil
         ) {
             self.favorites = favorites
             self.favoritesImportant = favoritesImportant
+            self.favoritesPinned = favoritesPinned
+            self.lastLoadedFavorites = favoritesImportant + favorites
             self.sort = sort
         }
     }
@@ -86,7 +110,9 @@ public struct FavoritesFeature: Reducer, Sendable {
         case `internal`(Internal)
         public enum Internal {
             case refresh
-            case favoritesResponse(Result<Favorite, any Error>)
+            case favoritesResponse(Result<Favorite, any Error>, offset: Int, perPage: Int, isFromRemote: Bool)
+            case prunePinnedIfComplete(Favorite, offset: Int, perPage: Int)
+            case applyPinnedMutation(PinnedMutation)
             case loadFavorites(offset: Int)
         }
         
@@ -179,132 +205,42 @@ public struct FavoritesFeature: Reducer, Sendable {
                     let goTo = state.appSettings.topicOpeningStrategy.asGoTo
                     return .send(.delegate(.openTopic(id: favorite.topic.id, name: favorite.topic.name, goTo: goTo)))
                 }
- 
-            case .view(.contextOptionMenu(let action)):
-                switch action {
-                case .sort:
-                    state.sort = SortFeature.State()
-                    return .none
-                    
-                case .markAllAsRead:
-                    return .run { send in
-                        let status = try await apiClient.readAllFavorites()
-                        let success = ToastMessage(text: Localization.markAsReadSuccess, haptic: .success)
-                        await toastClient.showToast(status ? success : .whoopsSomethingWentWrong)
-                        await send(.internal(.refresh))
-                        
-                        let unread = try await apiClient.getUnread(type: .all)
-                        await notificationsClient.showUnreadNotifications(unread)
-                    }
-                }
                 
-            case .view(.commonContextMenu(let action, let isForum)):
-                switch action {
-                case .copyLink(let id):
-                    let show = isForum ? "showforum" : "showtopic"
-                    pasteboardClient.copy("https://4pda.to/forum/index.php?\(show)=\(id)")
-                    return .run { _ in
-                        await toastClient.showToast(ToastMessage(text: Localization.linkCopied, haptic: .success))
-                    }
-                    
-                case .delete(let id):
-                    return .run { send in
-                        let request = SetFavoriteRequest(id: id, action: .delete, type: isForum ? .forum : .topic)
-                        let status = try await apiClient.setFavorite(request)
-                        await toastClient.showToast(status ? .actionCompleted : .whoopsSomethingWentWrong)
-                        await send(.internal(.refresh))
-                    }
-                    
-                case .setImportant(let id, let pin):
-                    return .run { send in
-                        let request = SetFavoriteRequest(id: id, action: pin ? .pin : .unpin, type: isForum ? .forum : .topic)
-                        let status = try await apiClient.setFavorite(request)
-                        await toastClient.showToast(status ? .actionCompleted : .whoopsSomethingWentWrong)
-                        await send(.internal(.refresh))
-                    }
-                    
-                case .markRead(let id):
-                    return .run { [id, isForum] send in
-                        let status = try await apiClient.markRead(id: id, isTopic: !isForum)
-                        await toastClient.showToast(status ? .actionCompleted : .whoopsSomethingWentWrong)
-                        await send(.internal(.refresh))
-                    }
-                }
+            case let .view(.contextOptionMenu(action)):
+                return handleOptionContextMenu(action, state: &state)
+                
+            case let .view(.commonContextMenu(action, isForum)):
+                return handleCommonContextMenu(action, isForum: isForum)
                 
             case let .view(.topicContextMenu(action, favorite)):
-                switch action {
-                case .goToFirst:
-                    return .send(.delegate(.openTopic(id: favorite.topic.id, name: favorite.topic.name, goTo: .first)))
-                    
-                case .goToEnd:
-                    return .send(.delegate(.openTopic(id: favorite.topic.id, name: favorite.topic.name, goTo: .last)))
-
-                case .notifyHatUpdate(let flag):
-                    return .run { send in
-                        await send(.view(.topicContextMenu(.notify(flag, .hatUpdate), favorite)))
-                    }
-                    
-                case .notify(let flag, let notify):
-                    return .run { send in
-                        let request = NotifyFavoriteRequest(id: favorite.topic.id, flag: flag, type: notify)
-                        let status = try await apiClient.notifyFavorite(request)
-                        let notifyTypeChangedToast = ToastMessage(text: Localization.notifyTypeChanged, haptic: .success)
-                        await toastClient.showToast(status ? notifyTypeChangedToast : .whoopsSomethingWentWrong)
-                        await send(.internal(.refresh))
-                    }
-                }
+                return handleTopicContextMenu(action, favorite: favorite, state: &state)
                 
             case .internal(.refresh):
+                if !state.isLoading {
+                    rebuildSections(&state)
+                }
                 state.isRefreshing = true
                 return .run { [offset = state.pageNavigation.offset] send in
                     await send(.internal(.loadFavorites(offset: offset)))
                 }
                 
             case let .internal(.loadFavorites(offset)):
-                if !state.isRefreshing {
-                    state.isLoading = true
-                }
-                return .run { [
-                    perPage = state.appSettings.forumPerPage,
-                    favoritesSettings = state.appSettings.favorites,
-                    isRefreshing = state.isRefreshing
-                ] send in
-                    let startTime = Date()
-                    for try await favorites in try await apiClient.getFavorites(
-                        FavoritesRequest(
-                            offset: offset,
-                            perPage: perPage,
-                            isSortByName: favoritesSettings.isSortByName,
-                            isSortReverse: favoritesSettings.isReverseOrder,
-                            isUnreadFirst: favoritesSettings.isUnreadFirst
-                        ),
-                        isRefreshing ? .cacheAndLoad : .cacheAndLoad
-                    ) {
-                        if isRefreshing { await delayUntilTimePassed(1.0, since: startTime) }
-                        await send(.internal(.favoritesResponse(.success(favorites))))
-                    }
-                } catch: { error, send in
-                    await send(.internal(.favoritesResponse(.failure(error))))
-                }
+                return loadFavorites(offset: offset, state: &state)
                 
-            case let .internal(.favoritesResponse(.success(response))):
-                if response.favorites.isEmpty && !state.pageNavigation.isFirstPage {
+            case let .internal(.favoritesResponse(.success(response), offset, perPage, isFromRemote)):
+                if response.favorites.isEmpty && offset > 0 {
                     return .send(.pageNavigation(.firstPageTapped))
                 }
-
-                var favsImportant: [FavoriteInfo] = []
-                var favorites: [FavoriteInfo] = []
-
-                for favorite in response.favorites {
-                    if favorite.isImportant {
-                        favsImportant.append(favorite)
-                    } else {
-                        favorites.append(favorite)
+                
+                if let userId = state.userSession?.userId {
+                    let shouldPrune = isFromRemote && isCompleteFirstPage(response, offset: offset, perPage: perPage)
+                    state.$pinnedFavorites.withLock {
+                        $0.sync(with: response.favorites, pruneMissing: shouldPrune, userId: userId)
                     }
                 }
-                                
-                state.favoritesImportant = favsImportant
-                state.favorites = favorites
+                
+                state.lastLoadedFavorites = response.favorites
+                rebuildSections(&state)
                 
                 state.isLoading = false
                 state.isRefreshing = false
@@ -313,8 +249,30 @@ public struct FavoritesFeature: Reducer, Sendable {
                 
                 return updatePageNavigation(&state, count: response.favoritesCount)
                 
-            case let .internal(.favoritesResponse(.failure(error))):
+            case let .internal(.prunePinnedIfComplete(response, offset, perPage)):
+                guard let userId = state.userSession?.userId,
+                      isCompleteFirstPage(response, offset: offset, perPage: perPage)
+                else { return .none }
+                
+                state.$pinnedFavorites.withLock {
+                    $0.sync(with: response.favorites, pruneMissing: true, userId: userId)
+                }
+                rebuildSections(&state)
+                return .none
+                
+            case let .internal(.applyPinnedMutation(mutation)):
+                applyPinnedMutation(mutation, state: &state)
+                return .none
+                
+            case let .internal(.favoritesResponse(.failure(error), _, _, _)):
                 print("FAVORITES RESPONSE FAILURE: \(error)")
+                state.isRefreshing = false
+                if state.isLoading {
+                    rebuildSections(&state)
+                    if !state.favoritesPinned.isEmpty {
+                        state.isLoading = false
+                    }
+                }
                 analyticsClient.reportFullyDisplayed()
                 return .run { _ in
                     await toastClient.showToast(.whoopsSomethingWentWrong)
@@ -331,8 +289,257 @@ public struct FavoritesFeature: Reducer, Sendable {
         Analytics()
     }
     
-    // MARK: - Shared logic
+    // MARK: - Context Menu Handlers
+    
+    private func handleOptionContextMenu(
+        _ action: FavoritesOptionContextMenuAction,
+        state: inout State
+    ) -> Effect<Action> {
+        switch action {
+        case .sort:
+            state.sort = SortFeature.State()
+            return .none
+            
+        case .markAllAsRead:
+            return .run { send in
+                let status = try await apiClient.readAllFavorites()
+                if status {
+                    await send(.internal(.applyPinnedMutation(.markAllRead)))
+                }
+                let success = ToastMessage(text: Localization.markAsReadSuccess, haptic: .success)
+                await toastClient.showToast(status ? success : .whoopsSomethingWentWrong)
+                await send(.internal(.refresh))
+                
+                let unread = try await apiClient.getUnread(type: .all)
+                await notificationsClient.showUnreadNotifications(unread)
+            }
+        }
+    }
+    
+    private func handleCommonContextMenu(
+        _ action: FavoriteContextMenuAction,
+        isForum: Bool
+    ) -> Effect<Action> {
+        switch action {
+        case .copyLink(let id):
+            let show = isForum ? "showforum" : "showtopic"
+            pasteboardClient.copy("https://4pda.to/forum/index.php?\(show)=\(id)")
+            return .run { _ in
+                await toastClient.showToast(ToastMessage(text: Localization.linkCopied, haptic: .success))
+            }
+            
+        case .delete(let id):
+            return .run { send in
+                let request = SetFavoriteRequest(id: id, action: .delete, type: isForum ? .forum : .topic)
+                let status = try await apiClient.setFavorite(request)
+                if status, !isForum {
+                    await send(.internal(.applyPinnedMutation(.delete(topicId: id))))
+                }
+                await toastClient.showToast(status ? .actionCompleted : .whoopsSomethingWentWrong)
+                await send(.internal(.refresh))
+            }
+            
+        case .setImportant(let id, let pin):
+            return .run { send in
+                let request = SetFavoriteRequest(id: id, action: pin ? .pin : .unpin, type: isForum ? .forum : .topic)
+                let status = try await apiClient.setFavorite(request)
+                if status, !isForum {
+                    await send(.internal(.applyPinnedMutation(.setImportant(topicId: id, isImportant: pin))))
+                }
+                await toastClient.showToast(status ? .actionCompleted : .whoopsSomethingWentWrong)
+                await send(.internal(.refresh))
+            }
+            
+        case .markRead(let id):
+            return .run { [id, isForum] send in
+                let status = try await apiClient.markRead(id: id, isTopic: !isForum)
+                if status, !isForum {
+                    await send(.internal(.applyPinnedMutation(.markRead(topicId: id))))
+                }
+                await toastClient.showToast(status ? .actionCompleted : .whoopsSomethingWentWrong)
+                await send(.internal(.refresh))
+            }
+        }
+    }
+    
+    private func handleTopicContextMenu(
+        _ action: FavoriteTopicContextMenuAction,
+        favorite: FavoriteInfo,
+        state: inout State
+    ) -> Effect<Action> {
+        switch action {
+        case .setPinned(let isPinned):
+            guard !favorite.isForum, let userId = state.userSession?.userId else { return .none }
+            state.$pinnedFavorites.withLock { pinned in
+                if isPinned {
+                    pinned.pin(favorite, userId: userId)
+                } else {
+                    pinned.unpin(topicId: favorite.id, userId: userId)
+                }
+            }
+            rebuildSections(&state)
+            let toast = ToastMessage(
+                text: isPinned ? Localization.topicPinned : Localization.topicUnpinned,
+                haptic: .success
+            )
+            return .run { _ in
+                await toastClient.showToast(toast)
+            }
+            
+        case .goToFirst:
+            return .send(.delegate(.openTopic(id: favorite.topic.id, name: favorite.topic.name, goTo: .first)))
+            
+        case .goToEnd:
+            return .send(.delegate(.openTopic(id: favorite.topic.id, name: favorite.topic.name, goTo: .last)))
+            
+        case .notifyHatUpdate(let flag):
+            return .run { send in
+                await send(.view(.topicContextMenu(.notify(flag, .hatUpdate), favorite)))
+            }
+            
+        case .notify(let flag, let notify):
+            return .run { send in
+                let request = NotifyFavoriteRequest(id: favorite.topic.id, flag: flag, type: notify)
+                let status = try await apiClient.notifyFavorite(request)
+                if status {
+                    await send(.internal(.applyPinnedMutation(.setNotify(topicId: favorite.topic.id, type: notify))))
+                }
+                let notifyTypeChangedToast = ToastMessage(text: Localization.notifyTypeChanged, haptic: .success)
+                await toastClient.showToast(status ? notifyTypeChangedToast : .whoopsSomethingWentWrong)
+                await send(.internal(.refresh))
+            }
+        }
+    }
+    
+    // MARK: - Loading & Sections
+    
+    private func loadFavorites(offset: Int, state: inout State) -> Effect<Action> {
+        if !state.isRefreshing {
+            state.isLoading = true
+        }
+        let perPage = state.appSettings.forumPerPage
+        let favoritesSettings = state.appSettings.favorites
+        let isRefreshing = state.isRefreshing
+        let cachePolicy: CachePolicy = (isRefreshing || offset > 0) ? .skipCache : .cacheAndLoad
+        return .run { send in
+            let startTime = Date()
+            var emissionCount = 0
+            var lastResponse: Favorite?
+            for try await favorites in try await apiClient.getFavorites(
+                FavoritesRequest(
+                    offset: offset,
+                    perPage: perPage,
+                    isSortByName: favoritesSettings.isSortByName,
+                    isSortReverse: favoritesSettings.isReverseOrder,
+                    isUnreadFirst: favoritesSettings.isUnreadFirst
+                ),
+                cachePolicy
+            ) {
+                emissionCount += 1
+                lastResponse = favorites
+                let isFromRemote = cachePolicy == .skipCache || emissionCount > 1
+                if isRefreshing { await delayUntilTimePassed(1.0, since: startTime) }
+                await send(
+                    .internal(
+                        .favoritesResponse(
+                            .success(favorites),
+                            offset: offset,
+                            perPage: perPage,
+                            isFromRemote: isFromRemote
+                        )
+                    )
+                )
+            }
+            if cachePolicy == .cacheAndLoad,
+               emissionCount == 1,
+               let lastResponse,
+               !Task.isCancelled {
+                await send(.internal(.prunePinnedIfComplete(lastResponse, offset: offset, perPage: perPage)))
+            }
+        } catch: { error, send in
+            await send(.internal(.favoritesResponse(.failure(error), offset: offset, perPage: perPage, isFromRemote: true)))
+        }
+        .cancellable(id: CancelID.loadFavorites, cancelInFlight: true)
+    }
+    
+    private func applyPinnedMutation(_ mutation: PinnedMutation, state: inout State) {
+        guard let userId = state.userSession?.userId else { return }
+        switch mutation {
+        case let .delete(topicId):
+            state.$pinnedFavorites.withLock { $0.unpin(topicId: topicId, userId: userId) }
+            state.lastLoadedFavorites.removeAll { !$0.isForum && $0.id == topicId }
+            
+        case let .setImportant(topicId, isImportant):
+            state.$pinnedFavorites.withLock {
+                $0.setImportant(topicId: topicId, isImportant: isImportant, userId: userId)
+            }
+            updateLoadedTopic(topicId: topicId, in: &state.lastLoadedFavorites) {
+                $0.settingImportant(isImportant)
+            }
+            
+        case let .markRead(topicId):
+            state.$pinnedFavorites.withLock { $0.markRead(topicId: topicId, userId: userId) }
+            updateLoadedTopic(topicId: topicId, in: &state.lastLoadedFavorites) {
+                $0.markingRead()
+            }
+            
+        case .markAllRead:
+            state.$pinnedFavorites.withLock { $0.markAllRead(userId: userId) }
+            for index in state.lastLoadedFavorites.indices where !state.lastLoadedFavorites[index].isForum {
+                state.lastLoadedFavorites[index] = state.lastLoadedFavorites[index].markingRead()
+            }
+            
+        case let .setNotify(topicId, type):
+            state.$pinnedFavorites.withLock { $0.setNotify(topicId: topicId, type: type, userId: userId) }
+            updateLoadedTopic(topicId: topicId, in: &state.lastLoadedFavorites) {
+                $0.withNotify(type)
+            }
+        }
+        rebuildSections(&state)
+    }
+    
+    private func updateLoadedTopic(
+        topicId: Int,
+        in favorites: inout [FavoriteInfo],
+        transform: (FavoriteInfo) -> FavoriteInfo
+    ) {
+        guard let index = favorites.firstIndex(where: { !$0.isForum && $0.id == topicId }) else { return }
+        favorites[index] = transform(favorites[index])
+    }
+    
+    private func rebuildSections(_ state: inout State) {
+        let pinned: [FavoriteInfo]
+        if let userId = state.userSession?.userId {
+            pinned = state.pinnedFavorites.topics(for: userId)
+        } else {
+            pinned = []
+        }
+        let pinnedIds = Set(pinned.map(\.id))
         
+        var important: [FavoriteInfo] = []
+        var regular: [FavoriteInfo] = []
+        
+        for favorite in state.lastLoadedFavorites {
+            if !favorite.isForum && pinnedIds.contains(favorite.id) {
+                continue
+            }
+            if favorite.isImportant {
+                important.append(favorite)
+            } else {
+                regular.append(favorite)
+            }
+        }
+        
+        state.favoritesPinned = pinned
+        state.favoritesImportant = important
+        state.favorites = regular
+    }
+    
+    private func isCompleteFirstPage(_ response: Favorite, offset: Int, perPage: Int) -> Bool {
+        guard offset == 0, perPage > 0 else { return false }
+        return response.favoritesCount < perPage && response.favorites.count >= response.favoritesCount
+    }
+    
     private func updatePageNavigation(
         _ state: inout State,
         count: Int = 0,

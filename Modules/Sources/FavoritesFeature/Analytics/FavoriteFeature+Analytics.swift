@@ -63,6 +63,8 @@ extension FavoritesFeature {
                     
                 case let .view(.topicContextMenu(option, favorite)):
                     switch option {
+                    case let .setPinned(isPinned):
+                        analytics.log(FavoritesEvent.setPinned(favorite.topic.id, isPinned))
                     case .goToFirst:
                         analytics.log(FavoritesEvent.goToFirst(favorite.topic.id))
                     case .goToEnd:
@@ -91,13 +93,11 @@ extension FavoritesFeature {
                         analytics.log(FavoritesEvent.sortCancelButtonTapped)
                     }
                     
-                case .internal(.favoritesResponse):
-                    break
-                    
-                case .internal(.loadFavorites):
-                    break
-                    
-                case .internal(.refresh):
+                case .internal(.favoritesResponse),
+                        .internal(.prunePinnedIfComplete),
+                        .internal(.applyPinnedMutation),
+                        .internal(.loadFavorites),
+                        .internal(.refresh):
                     break
                 }
                 
