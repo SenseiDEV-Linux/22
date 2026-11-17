@@ -317,7 +317,9 @@ public struct QMSFeature: Reducer, Sendable {
             case let .internal(.messageSent(attachments)):
                 state.isSending = false
                 state.draftSnapshot = ""
-                state.draftTextRange = NSRange(location: 0, length: 0)
+                if state.draftText.isEmpty {
+                    state.draftTextRange = NSRange(location: 0, length: 0)
+                }
                 let sentAttachmentIDs = Set(attachments)
                 state.upload.files.removeAll { file in
                     guard let serverId = file.serverId else { return false }
@@ -327,8 +329,10 @@ public struct QMSFeature: Reducer, Sendable {
 
             case let .internal(.messageSendError(error)):
                 state.isSending = false
-                state.draftText = state.draftSnapshot
-                state.draftTextRange = NSRange(location: state.draftText.utf16.count, length: 0)
+                if state.draftText.isEmpty {
+                    state.draftText = state.draftSnapshot
+                    state.draftTextRange = NSRange(location: state.draftText.utf16.count, length: 0)
+                }
                 state.draftSnapshot = ""
                 state.alert = .somethingWentWrong
                 analyticsClient.capture(error)

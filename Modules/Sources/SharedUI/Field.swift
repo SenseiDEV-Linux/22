@@ -205,28 +205,61 @@ private struct SelectableTextView: UIViewRepresentable {
     }
     
     func updateUIView(_ uiView: UITextView, context: Context) {
-        if content.isEmpty {
-            if !uiView.isFirstResponder {
-                let placeholderText = String(localized: placeholder)
+        context.coordinator.content = $content
+        context.coordinator.selection = $selection
+        context.coordinator.isUpdating = true
+        defer {
+            context.coordinator.lastContent = content
+            context.coordinator.isUpdating = false
+        }
 
-                if uiView.text != placeholderText {
+        let previousText = uiView.text ?? ""
+        let wasShowingPlaceholder = uiView.textColor == Self.placeholderColor
+
+        if content.isEmpty {
+            if uiView.isFirstResponder {
+                let shouldClearMarkedText = !context.coordinator.lastContent.isEmpty
+                if uiView.markedTextRange == nil || shouldClearMarkedText {
+                    if uiView.markedTextRange != nil {
+                        uiView.unmarkText()
+                    }
+                    if !(uiView.text ?? "").isEmpty {
+                        uiView.text = ""
+                    }
+                }
+                uiView.textColor = .label
+            } else {
+                let placeholderText = String(localized: placeholder)
+                uiView.textColor = Self.placeholderColor
+
+                if !wasShowingPlaceholder || previousText != placeholderText {
                     uiView.text = placeholderText
                 }
-
-                uiView.textColor = Self.placeholderColor
             }
         } else {
-            if uiView.text != content {
+            uiView.textColor = .label
+
+            if uiView.markedTextRange == nil, wasShowingPlaceholder || previousText != content {
                 uiView.text = content
             }
+        }
 
-            uiView.textColor = .label
+        if (uiView.text ?? "") != previousText {
+            uiView.invalidateIntrinsicContentSize()
         }
 
         // when range (selection binding) has been changed in external place
-        if let externalSelection = selection,
-           uiView.selectedRange != externalSelection {
-            uiView.selectedRange = externalSelection
+        if uiView.textColor != Self.placeholderColor,
+           uiView.markedTextRange == nil,
+           let externalSelection = selection,
+           externalSelection.location != NSNotFound {
+            let textLength = (uiView.text ?? "").utf16.count
+            let location = min(max(0, externalSelection.location), textLength)
+            let length = min(max(0, externalSelection.length), textLength - location)
+            let clampedSelection = NSRange(location: location, length: length)
+            if uiView.selectedRange != clampedSelection {
+                uiView.selectedRange = clampedSelection
+            }
         }
     }
     
@@ -252,6 +285,8 @@ private struct SelectableTextView: UIViewRepresentable {
         var selection: Binding<NSRange?>
         let characterLimit: Int?
         let placeholder: LocalizedStringResource
+        var isUpdating = false
+        var lastContent: String
         
         init(
             content: Binding<String>,
@@ -263,6 +298,7 @@ private struct SelectableTextView: UIViewRepresentable {
             self.selection = selection
             self.characterLimit = characterLimit
             self.placeholder = placeholder
+            self.lastContent = content.wrappedValue
         }
         
         func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText: String) -> Bool {
@@ -273,24 +309,36 @@ private struct SelectableTextView: UIViewRepresentable {
         }
         
         func textViewDidChangeSelection(_ textView: UITextView) {
-            selection.wrappedValue = textView.selectedRange
+            guard !isUpdating, textView.textColor != placeholderColor else { return }
+            if selection.wrappedValue != textView.selectedRange {
+                selection.wrappedValue = textView.selectedRange
+            }
         }
         
         func textViewDidChange(_ textView: UITextView) {
-            content.wrappedValue = textView.text
+            guard !isUpdating else { return }
+            let updatedText = textView.textColor == placeholderColor ? "" : (textView.text ?? "")
+            lastContent = updatedText
+            if content.wrappedValue != updatedText {
+                content.wrappedValue = updatedText
+            }
         }
         
         func textViewDidBeginEditing(_ textView: UITextView) {
             if textView.textColor == placeholderColor {
+                isUpdating = true
                 textView.text = nil
                 textView.textColor = UIColor.label
+                isUpdating = false
             }
         }
         
         func textViewDidEndEditing(_ textView: UITextView) {
             if textView.text.isEmpty {
-                textView.text = String(localized: placeholder)
+                isUpdating = true
                 textView.textColor = placeholderColor
+                textView.text = String(localized: placeholder)
+                isUpdating = false
             }
         }
     }

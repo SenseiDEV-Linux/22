@@ -110,10 +110,10 @@ public struct QMSScreen: View {
 
     private func makeChatView() -> AnyView {
         AnyView(
-            ChatView(messages: store.messages) { message in
+            ChatView(messages: store.messages) { _ in
                 // send(.sendMessageButtonTapped(message))
-            } inputViewBuilder: { text, _, _, inputViewStyle, _, _ in
-                makeInputView(text: text, style: inputViewStyle)
+            } inputViewBuilder: { _, _, _, inputViewStyle, _, _ in
+                makeInputView(style: inputViewStyle)
             } messageMenuAction: { (action: ChatAction, _, message) in
                 handleMessageMenuAction(action, message: message)
             }
@@ -175,12 +175,12 @@ public struct QMSScreen: View {
         return .handled
     }
 
-    private func makeInputView(text: Binding<String>, style: InputViewStyle) -> AnyView {
+    private func makeInputView(style: InputViewStyle) -> AnyView {
         switch style {
         case .message:
             return AnyView(
                 WithPerceptionTracking {
-                    InputView(text: text)
+                    InputView()
                 }
             )
         case .signature:
@@ -188,7 +188,7 @@ public struct QMSScreen: View {
         }
     }
 
-    private func InputView(text: Binding<String>) -> some View {
+    private func InputView() -> some View {
         VStack(spacing: 8) {
             UploadBoxView(
                 store: store.scope(\.upload, action: \.upload),
@@ -199,7 +199,7 @@ public struct QMSScreen: View {
             HStack(alignment: .bottom, spacing: 8) {
                 #if DEBUG
                 if ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1" {
-                    Button(String("+")) { text.wrappedValue += "text" }
+                    Button(String("+")) { store.draftText += "text" }
                         .buttonStyle(.borderedProminent)
                 }
                 #endif
@@ -218,7 +218,7 @@ public struct QMSScreen: View {
                 .disabled(store.isSending || store.upload.isAnyFileUploading)
 
                 Field(
-                    content: text,
+                    content: $store.draftText,
                     placeholder: LocalizedStringResource("qms.textfield.placeholder", bundle: .module),
                     focusEqual: store.chatId,
                     focus: $focusedInput,
@@ -236,7 +236,7 @@ public struct QMSScreen: View {
 
                 Button {
                     send(.sendMessageButtonTapped(
-                        DraftMessage(text: text.wrappedValue, medias: [], giphyMedia: nil, recording: nil, replyMessage: nil, createdAt: .now)
+                        DraftMessage(text: store.draftText, medias: [], giphyMedia: nil, recording: nil, replyMessage: nil, createdAt: .now)
                     ))
                 } label: {
                     Circle()
@@ -262,9 +262,8 @@ public struct QMSScreen: View {
         .padding()
         .animation(.default, value: store.isSending)
         .animation(.default, value: store.canSendMessage)
-        .animation(.default, value: text.wrappedValue)
-        .bind($focusedInput, to: $store.focus)
-        .bind(text, to: $store.draftText)
+        .animation(.default, value: store.draftText)
+        .bind($store.focus, to: $focusedInput)
     }
 }
 
