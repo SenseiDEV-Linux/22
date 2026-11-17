@@ -21,6 +21,12 @@ extension QMSFeature {
                 switch action {
                 case .view(.onAppear),
                      .view(.attachmentButtonTapped),
+                     .view(.selectMessagesButtonTapped),
+                     .view(.selectMessageFromMenu(messageId: _)),
+                     .view(.toggleMessageSelection(_)),
+                     .view(.toggleSelectAllMessagesButtonTapped),
+                     .view(.cancelSelectionButtonTapped),
+                     .view(.deleteSelectedMessagesButtonTapped),
                      .view(.deleteMessageTapped(messageId: _, isOwnMessage: _)),
                      .view(.deleteMessageConfirmed(forAll: _)),
                      .view(.saveImagesToPhotos(_)),

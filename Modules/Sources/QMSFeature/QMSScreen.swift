@@ -58,15 +58,18 @@ public struct QMSScreen: View {
                 imageExportPresenter
                 chatContent
             }
-            .navigationTitle(store.title)
+            .navigationTitle(navigationTitleText)
             ._toolbarTitleDisplayMode(.inline)
+            .toolbar {
+                toolbarContent
+            }
             .alert($store.scope(\.$alert, action: \.alert))
             .confirmationDialog(
-                Text("qms.delete.message.title", bundle: .module),
-                isPresented: Binding(projectedValue: $store.isDeleteMessageConfirmationPresented),
+                deleteConfirmationTitle,
+                isPresented: $store.isDeleteMessageConfirmationPresented,
                 titleVisibility: .visible
             ) {
-                if store.pendingDeleteMessageIsOwn {
+                if store.pendingDeleteCanDeleteForAll {
                     Button(
                         String(localized: "qms.delete.message.forAll", bundle: .module),
                         role: .destructive
@@ -84,6 +87,56 @@ public struct QMSScreen: View {
             }
             .onAppear {
                 send(.onAppear)
+            }
+        }
+    }
+
+    private var navigationTitleText: String {
+        guard store.isSelectingMessages else {
+            return store.title
+        }
+        let count = store.selectedMessageIds.count
+        guard count > 0 else {
+            return String(localized: "qms.selection.title.empty", bundle: .module)
+        }
+        return String(localized: "qms.selection.title.count \(count)", bundle: .module)
+    }
+
+    private var deleteConfirmationTitle: Text {
+        let count = store.pendingDeleteMessageIds.count
+        if count > 1 {
+            return Text(String(localized: "qms.delete.messages.title \(count)", bundle: .module))
+        }
+        return Text("qms.delete.message.title", bundle: .module)
+    }
+
+    private var shouldShowSelectionToolbarItem: Bool {
+        store.isSelectingMessages || (store.chat != nil && !store.selectableMessageIds.isEmpty)
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        if shouldShowSelectionToolbarItem {
+            ToolbarItem(placement: .topBarTrailing) {
+                WithPerceptionTracking {
+                    if store.isSelectingMessages {
+                        Button {
+                            send(.cancelSelectionButtonTapped)
+                        } label: {
+                            Text("Cancel", bundle: .module)
+                        }
+                        .disabled(store.isDeletingMessage)
+                    } else {
+                        Button {
+                            dismissKeyboard()
+                            send(.selectMessagesButtonTapped)
+                        } label: {
+                            Image(systemSymbol: .checkmarkCircle)
+                        }
+                        .disabled(store.isDeletingMessage || store.isSending)
+                        .accessibilityLabel(Text("qms.message.select", bundle: .module))
+                    }
+                }
             }
         }
     }
@@ -109,25 +162,89 @@ public struct QMSScreen: View {
     }
 
     private func makeChatView() -> AnyView {
-        AnyView(
-            ChatView(messages: store.messages) { _ in
-                // send(.sendMessageButtonTapped(message))
-            } inputViewBuilder: { _, _, _, inputViewStyle, _, _ in
-                makeInputView(style: inputViewStyle)
-            } messageMenuAction: { (action: ChatAction, _, message) in
-                handleMessageMenuAction(action, message: message)
-            }
+        let theme = qmsChatTheme
+        let openURL = OpenURLAction(handler: handleOpenURL)
+        return AnyView(
+            ChatView(
+                messages: store.messages,
+                messageBuilder: { message, positionInGroup, positionInSection, _, showMenu, _, showAttachment in
+                    makeMessageRow(
+                        message: message,
+                        positionInGroup: positionInGroup,
+                        positionInMessagesSection: positionInSection,
+                        chatTheme: theme,
+                        openURL: openURL,
+                        showContextMenu: showMenu,
+                        showAttachment: showAttachment
+                    )
+                },
+                inputViewBuilder: { _, _, _, inputViewStyle, _, _ in
+                    makeInputView(style: inputViewStyle)
+                },
+                messageMenuAction: { (action: ChatAction, _, message) in
+                    handleMessageMenuAction(action, message: message)
+                },
+                localization: qmsChatLocalization,
+                didSendMessage: { _ in
+                    // send(.sendMessageButtonTapped(message))
+                }
+            )
+            .showMessageMenuOnLongPress(false)
             .keyboardDismissMode(.interactive)
             .enableLoadMore { _ in
                 await send(.loadMoreTriggered)
             }
             .linkPreviewsDisabled()
-            .messageUseStyler { string in
-                QMSBuilder(text: string).build()
-            }
             .setAvailableInputs([.text])
-            .chatTheme(qmsChatTheme)
-            .environment(\.openURL, OpenURLAction(handler: handleOpenURL))
+            .chatTheme(theme)
+            .environment(\.openURL, openURL)
+        )
+    }
+
+    private func makeMessageRow(
+        message: ExyteChat.Message,
+        positionInGroup: PositionInUserGroup,
+        positionInMessagesSection: PositionInMessagesSection,
+        chatTheme: ChatTheme,
+        openURL: OpenURLAction,
+        showContextMenu: @escaping () -> Void,
+        showAttachment: @escaping (ExyteChat.Attachment) -> Void
+    ) -> some View {
+        let messageId = Int(message.id)
+        return WithPerceptionTracking {
+            let isSelecting = store.isSelectingMessages && messageId != nil
+            let isSelected = messageId.map { store.selectedMessageIds.contains($0) } ?? false
+            QMSMessageRowView(
+                message: message,
+                positionInGroup: positionInGroup,
+                positionInMessagesSection: positionInMessagesSection,
+                tintColor: tintColor,
+                isSelecting: isSelecting,
+                isSelected: isSelected,
+                isInteractionDisabled: store.isDeletingMessage,
+                onToggleSelection: {
+                    guard let messageId else { return }
+                    send(.toggleMessageSelection(messageId))
+                },
+                onShowContextMenu: showContextMenu,
+                onTapAttachment: showAttachment
+            )
+            .chatTheme(chatTheme)
+            .environment(\.openURL, openURL)
+            .animation(.easeInOut(duration: 0.18), value: isSelecting)
+            .animation(.easeInOut(duration: 0.15), value: isSelected)
+        }
+    }
+
+    private var qmsChatLocalization: ChatLocalization {
+        ChatLocalization(
+            inputPlaceholder: String(localized: "qms.textfield.placeholder", bundle: .module),
+            signatureText: "",
+            cancelButtonText: String(localized: "Cancel", bundle: .module),
+            recentToggleText: "",
+            waitingForNetwork: "",
+            recordingText: "",
+            replyToText: ""
         )
     }
 
@@ -151,6 +268,11 @@ public struct QMSScreen: View {
         switch action {
         case .copy:
             UIPasteboard.general.string = message.text
+        case .select:
+            guard let messageId = Int(message.id) else { return }
+            UISelectionFeedbackGenerator().selectionChanged()
+            dismissKeyboard()
+            send(.selectMessageFromMenu(messageId: messageId))
         case .delete:
             guard let messageId = Int(message.id) else { return }
             send(.deleteMessageTapped(
@@ -162,6 +284,16 @@ public struct QMSScreen: View {
         case .saveToFiles:
             send(.saveImagesToFiles(imageURLs(in: message)))
         }
+    }
+
+    private func dismissKeyboard() {
+        focusedInput = nil
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
     }
 
     private func imageURLs(in message: ExyteChat.Message) -> [URL] {
@@ -180,12 +312,84 @@ public struct QMSScreen: View {
         case .message:
             return AnyView(
                 WithPerceptionTracking {
-                    InputView()
+                    if store.isSelectingMessages {
+                        SelectionBarView()
+                    } else {
+                        InputView()
+                    }
                 }
             )
         case .signature:
             return AnyView(EmptyView())
         }
+    }
+
+    private var canDeleteSelectedMessages: Bool {
+        !store.selectedMessageIds.isEmpty && !store.isDeletingMessage
+    }
+
+    private var selectionDeleteButtonTitle: String {
+        let count = store.selectedMessageIds.count
+        guard count > 0 else {
+            return String(localized: "qms.message.delete", bundle: .module)
+        }
+        return String(localized: "qms.selection.delete.count \(count)", bundle: .module)
+    }
+
+    private func SelectionBarView() -> some View {
+        VStack(spacing: 0) {
+            Divider()
+
+            HStack(spacing: 12) {
+                Button {
+                    send(.toggleSelectAllMessagesButtonTapped)
+                } label: {
+                    Text(
+                        store.areAllMessagesSelected
+                            ? LocalizedStringKey("qms.selection.deselectAll")
+                            : LocalizedStringKey("qms.selection.selectAll"),
+                        bundle: .module
+                    )
+                    .font(.body)
+                    .foregroundStyle(
+                        store.isDeletingMessage ? Color(.Labels.teritary) : tintColor
+                    )
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(store.isDeletingMessage || store.selectableMessageIds.isEmpty)
+
+                Spacer(minLength: 8)
+
+                Button(role: .destructive) {
+                    send(.deleteSelectedMessagesButtonTapped)
+                } label: {
+                    HStack(spacing: 6) {
+                        if store.isDeletingMessage {
+                            ProgressView()
+                                .progressViewStyle(.circular)
+                        } else {
+                            Image(systemSymbol: .trash)
+                        }
+                        Text(selectionDeleteButtonTitle)
+                            .fontWeight(.semibold)
+                    }
+                    .font(.body)
+                    .foregroundStyle(
+                        canDeleteSelectedMessages ? Color(.Main.red) : Color(.Labels.teritary)
+                    )
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!canDeleteSelectedMessages)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 6)
+            .background(backgroundColors.primary)
+        }
+        .animation(.default, value: store.isDeletingMessage)
     }
 
     private func InputView() -> some View {

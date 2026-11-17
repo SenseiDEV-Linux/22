@@ -6,12 +6,14 @@
 //
 
 import ExyteChat
+import SFSafeSymbols
 import SwiftUI
 
 enum ChatAction: MessageMenuAction {
     case copy
     case saveToPhotos
     case saveToFiles
+    case select
     case delete
     
     func title() -> String {
@@ -22,6 +24,8 @@ enum ChatAction: MessageMenuAction {
             return String(localized: "qms.image.save.photos", bundle: .module)
         case .saveToFiles:
             return String(localized: "qms.image.save.files", bundle: .module)
+        case .select:
+            return String(localized: "qms.message.select", bundle: .module)
         case .delete:
             return String(localized: "qms.message.delete", bundle: .module)
         }
@@ -35,6 +39,8 @@ enum ChatAction: MessageMenuAction {
             return Image(systemName: "square.and.arrow.down")
         case .saveToFiles:
             return Image(systemName: "folder")
+        case .select:
+            return Image(systemSymbol: .checkmarkCircle)
         case .delete:
             return Image(systemName: "trash")
         }
@@ -45,7 +51,7 @@ enum ChatAction: MessageMenuAction {
         if message.attachments.contains(where: { $0.type == .image }) {
             actions += [.saveToPhotos, .saveToFiles]
         }
-        actions.append(.delete)
+        actions += [.select, .delete]
         return actions
     }
 }

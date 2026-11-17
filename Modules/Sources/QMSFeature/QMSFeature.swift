@@ -38,6 +38,10 @@ public struct QMSFeature: Reducer, Sendable {
         case latest // initial/refresh
         case older  // pagination
     }
+
+    private enum CancelID: Hashable {
+        case deleteConfirmationDelay
+    }
     
     // MARK: - State
     
@@ -51,8 +55,11 @@ public struct QMSFeature: Reducer, Sendable {
         public let chatId: Int
         public var chat: QMSChat?
         public var messages: [Message] = []
-        var pendingDeleteMessageId: Int?
-        var pendingDeleteMessageIsOwn = false
+        var isSelectingMessages = false
+        var selectedMessageIds: Set<Int> = []
+        var deletedMessageIds: Set<Int> = []
+        var pendingDeleteMessageIds: [Int] = []
+        var pendingDeleteCanDeleteForAll = false
         var isDeleteMessageConfirmationPresented = false
         var isDeletingMessage = false
         var imageExportFileURLs: [URL] = []
@@ -81,6 +88,18 @@ public struct QMSFeature: Reducer, Sendable {
         var canSendMessage: Bool {
             !isSending && !upload.isAnyFileUploading &&
             (!draftText.isEmpty || !uploadedAttachmentIDs.isEmpty)
+        }
+
+        var selectableMessageIds: Set<Int> {
+            if let chat {
+                return Set(chat.messages.map(\.id))
+            }
+            return Set(messages.compactMap { Int($0.id) })
+        }
+
+        var areAllMessagesSelected: Bool {
+            let selectable = selectableMessageIds
+            return !selectable.isEmpty && selectable.isSubset(of: selectedMessageIds)
         }
 
         public var title: String {
@@ -115,6 +134,12 @@ public struct QMSFeature: Reducer, Sendable {
             case sendMessageButtonTapped(DraftMessage)
             case loadMoreTriggered
             case urlTapped(URL)
+            case selectMessagesButtonTapped
+            case selectMessageFromMenu(messageId: Int)
+            case toggleMessageSelection(Int)
+            case toggleSelectAllMessagesButtonTapped
+            case cancelSelectionButtonTapped
+            case deleteSelectedMessagesButtonTapped
             case deleteMessageTapped(messageId: Int, isOwnMessage: Bool)
             case deleteMessageConfirmed(forAll: Bool)
             case saveImagesToPhotos([URL])
@@ -128,7 +153,7 @@ public struct QMSFeature: Reducer, Sendable {
             case chatLoaded(Result<QMSChat, any Error>, LoadKind)
             case fullImageURLLoaded(Int, Result<URL, any Error>)
             case showDeleteMessageConfirmation
-            case messageDeleted(Int, Result<String, any Error>)
+            case messagesDeleted(deletedIds: [Int], error: (any Error)?)
             case imagesSavedToPhotos
             case imageSaveFailed(any Error)
             case imageFilesPrepared(Result<[URL], any Error>)
@@ -186,13 +211,83 @@ public struct QMSFeature: Reducer, Sendable {
                 ])
                 
             case .view(.attachmentButtonTapped):
-                guard !state.isSending, !state.upload.isAnyFileUploading else { return .none }
+                guard !state.isSelectingMessages,
+                      !state.isSending,
+                      !state.upload.isAnyFileUploading
+                else { return .none }
                 return .send(.upload(.view(.selectFilesButtonTapped)))
+
+            case .view(.selectMessagesButtonTapped):
+                guard !state.isDeletingMessage, !state.selectableMessageIds.isEmpty else { return .none }
+                state.focus = nil
+                state.isSelectingMessages = true
+                state.selectedMessageIds.removeAll()
+                state.pendingDeleteMessageIds = []
+                state.pendingDeleteCanDeleteForAll = false
+                state.isDeleteMessageConfirmationPresented = false
+                return .cancel(id: CancelID.deleteConfirmationDelay)
+
+            case let .view(.selectMessageFromMenu(messageId)):
+                guard !state.isDeletingMessage,
+                      state.selectableMessageIds.contains(messageId)
+                else { return .none }
+                state.focus = nil
+                state.isSelectingMessages = true
+                state.selectedMessageIds = [messageId]
+                state.pendingDeleteMessageIds = []
+                state.pendingDeleteCanDeleteForAll = false
+                state.isDeleteMessageConfirmationPresented = false
+                return .cancel(id: CancelID.deleteConfirmationDelay)
+
+            case let .view(.toggleMessageSelection(messageId)):
+                guard state.isSelectingMessages,
+                      !state.isDeletingMessage,
+                      state.selectableMessageIds.contains(messageId)
+                else { return .none }
+                if state.selectedMessageIds.contains(messageId) {
+                    state.selectedMessageIds.remove(messageId)
+                } else {
+                    state.selectedMessageIds.insert(messageId)
+                }
+                return .none
+
+            case .view(.toggleSelectAllMessagesButtonTapped):
+                guard state.isSelectingMessages, !state.isDeletingMessage else { return .none }
+                let selectable = state.selectableMessageIds
+                guard !selectable.isEmpty else { return .none }
+                if selectable.isSubset(of: state.selectedMessageIds) {
+                    state.selectedMessageIds.removeAll()
+                } else {
+                    state.selectedMessageIds = selectable
+                }
+                return .none
+
+            case .view(.cancelSelectionButtonTapped):
+                guard !state.isDeletingMessage else { return .none }
+                exitMessageSelection(&state)
+                return .cancel(id: CancelID.deleteConfirmationDelay)
+
+            case .view(.deleteSelectedMessagesButtonTapped):
+                guard state.isSelectingMessages, !state.isDeletingMessage else { return .none }
+                let selection = resolvePendingDeleteSelection(
+                    selectedIds: state.selectedMessageIds,
+                    chat: state.chat,
+                    messages: state.messages,
+                    currentUserId: state.userSession?.userId
+                )
+                guard !selection.messageIds.isEmpty else {
+                    state.selectedMessageIds.removeAll()
+                    return .none
+                }
+                state.pendingDeleteMessageIds = selection.messageIds
+                state.pendingDeleteCanDeleteForAll = selection.canDeleteForAll
+                state.isDeleteMessageConfirmationPresented = true
+                return .cancel(id: CancelID.deleteConfirmationDelay)
 
             case let .view(.deleteMessageTapped(messageId, isOwnMessage)):
                 guard !state.isDeletingMessage else { return .none }
-                state.pendingDeleteMessageId = messageId
-                state.pendingDeleteMessageIsOwn = isOwnMessage
+                state.pendingDeleteMessageIds = [messageId]
+                state.pendingDeleteCanDeleteForAll = isOwnMessage
                 state.isDeleteMessageConfirmationPresented = false
                 return .run { send in
                     do {
@@ -202,21 +297,41 @@ public struct QMSFeature: Reducer, Sendable {
                         return
                     }
                 }
+                .cancellable(id: CancelID.deleteConfirmationDelay, cancelInFlight: true)
 
             case let .view(.deleteMessageConfirmed(forAll)):
-                guard let messageId = state.pendingDeleteMessageId,
+                let messageIds = state.pendingDeleteMessageIds
+                guard !messageIds.isEmpty,
                       !state.isDeletingMessage,
-                      !forAll || state.pendingDeleteMessageIsOwn
+                      !forAll || state.pendingDeleteCanDeleteForAll
                 else { return .none }
-                state.pendingDeleteMessageId = nil
+                state.pendingDeleteMessageIds = []
+                state.pendingDeleteCanDeleteForAll = false
                 state.isDeleteMessageConfirmationPresented = false
                 state.isDeletingMessage = true
-                return .run { [chatId = state.chatId] send in
-                    let result = await Result {
-                        try await qmsClient.deleteMessage(chatId, messageId, forAll)
+                return .merge([
+                    .cancel(id: CancelID.deleteConfirmationDelay),
+                    .run { [chatId = state.chatId] send in
+                        var deletedIds: [Int] = []
+                        var firstError: (any Error)?
+                        for messageId in messageIds {
+                            if Task.isCancelled { break }
+                            do {
+                                _ = try await qmsClient.deleteMessage(chatId, messageId, forAll)
+                                deletedIds.append(messageId)
+                            } catch is CancellationError {
+                                break
+                            } catch {
+                                if firstError == nil {
+                                    firstError = error
+                                }
+                            }
+                        }
+                        let completedIds = deletedIds
+                        let failure = firstError
+                        await send(.internal(.messagesDeleted(deletedIds: completedIds, error: failure)))
                     }
-                    await send(.internal(.messageDeleted(messageId, result)))
-                }
+                ])
 
             case let .view(.saveImagesToPhotos(urls)):
                 guard !urls.isEmpty else { return .none }
@@ -286,7 +401,8 @@ public struct QMSFeature: Reducer, Sendable {
 
             case let .view(.sendMessageButtonTapped(draftMessage)):
                 let attachments = state.uploadedAttachmentIDs
-                guard !state.isSending,
+                guard !state.isSelectingMessages,
+                      !state.isSending,
                       !state.upload.isAnyFileUploading,
                       (!draftMessage.text.isEmpty || !attachments.isEmpty)
                 else { return .none }
@@ -375,9 +491,10 @@ public struct QMSFeature: Reducer, Sendable {
                 switch result {
                 case let .success(chat):
                     let existingRemote = state.chat?.messages ?? []
+                    let incomingRemote = chat.messages.filter { !state.deletedMessageIds.contains($0.id) }
                     let mergeResult = mergeRemoteMessages(
-                        existing: existingRemote,
-                        incoming: chat.messages,
+                        existing: existingRemote.filter { !state.deletedMessageIds.contains($0.id) },
+                        incoming: incomingRemote,
                         loadKind: loadKind
                     )
                     
@@ -404,6 +521,14 @@ public struct QMSFeature: Reducer, Sendable {
                         fullImageURLs: state.fullImageURLs
                     )
                     state.chat = mergedChat
+
+                    if state.isSelectingMessages {
+                        let validIds = Set(mergeResult.messages.map(\.id))
+                        state.selectedMessageIds.formIntersection(validIds)
+                        if validIds.isEmpty, !state.isDeletingMessage {
+                            exitMessageSelection(&state)
+                        }
+                    }
                     
                     if mergeResult.messages.count >= chat.totalCount {
                         state.hasMoreOlderMessages = false
@@ -458,25 +583,41 @@ public struct QMSFeature: Reducer, Sendable {
                 return .none
                 
             case .internal(.showDeleteMessageConfirmation):
-                guard state.pendingDeleteMessageId != nil, !state.isDeletingMessage else { return .none }
+                guard !state.pendingDeleteMessageIds.isEmpty,
+                      !state.isDeletingMessage,
+                      !state.isSelectingMessages
+                else { return .none }
                 state.isDeleteMessageConfirmationPresented = true
                 return .none
 
-            case let .internal(.messageDeleted(messageId, result)):
+            case let .internal(.messagesDeleted(deletedIds, error)):
                 state.isDeletingMessage = false
-                switch result {
-                case .success:
+                let deletedSet = Set(deletedIds)
+                if !deletedSet.isEmpty {
+                    state.deletedMessageIds.formUnion(deletedSet)
                     if var chat = state.chat {
-                        chat.messages.removeAll { $0.id == messageId }
+                        chat.messages.removeAll { deletedSet.contains($0.id) }
                         state.chat = chat
                     }
-                    state.messages.removeAll { $0.id == String(messageId) }
-                    return .send(.internal(.loadChat))
-                case let .failure(error):
+                    let deletedStringIds = Set(deletedSet.map(String.init))
+                    state.messages.removeAll { deletedStringIds.contains($0.id) }
+                    state.selectedMessageIds.subtract(deletedSet)
+                }
+
+                if let error {
+                    if state.isSelectingMessages,
+                       state.selectedMessageIds.isEmpty || state.selectableMessageIds.isEmpty {
+                        exitMessageSelection(&state)
+                    }
                     state.alert = .somethingWentWrong
                     analyticsClient.capture(error)
-                    return .none
+                    return deletedSet.isEmpty ? .none : .send(.internal(.loadChat))
                 }
+
+                if state.isSelectingMessages {
+                    exitMessageSelection(&state)
+                }
+                return deletedSet.isEmpty ? .none : .send(.internal(.loadChat))
 
             case .internal(.imagesSavedToPhotos):
                 state.alert = qmsImagesSavedToPhotosAlert()
@@ -513,6 +654,59 @@ public struct QMSFeature: Reducer, Sendable {
     }
     
     // MARK: - Shared Logic
+
+    private struct PendingDeleteSelection {
+        let messageIds: [Int]
+        let canDeleteForAll: Bool
+    }
+
+    private func exitMessageSelection(_ state: inout State) {
+        state.isSelectingMessages = false
+        state.selectedMessageIds.removeAll()
+        state.pendingDeleteMessageIds = []
+        state.pendingDeleteCanDeleteForAll = false
+        state.isDeleteMessageConfirmationPresented = false
+    }
+
+    private func resolvePendingDeleteSelection(
+        selectedIds: Set<Int>,
+        chat: QMSChat?,
+        messages: [Message],
+        currentUserId: Int?
+    ) -> PendingDeleteSelection {
+        guard !selectedIds.isEmpty else {
+            return PendingDeleteSelection(messageIds: [], canDeleteForAll: false)
+        }
+
+        if let chat {
+            let matching = chat.messages.filter { selectedIds.contains($0.id) }
+            guard !matching.isEmpty else {
+                return PendingDeleteSelection(messageIds: [], canDeleteForAll: false)
+            }
+            let canDeleteForAll: Bool
+            if let currentUserId {
+                canDeleteForAll = matching.allSatisfy { $0.senderId == currentUserId }
+            } else {
+                canDeleteForAll = false
+            }
+            return PendingDeleteSelection(
+                messageIds: matching.map(\.id),
+                canDeleteForAll: canDeleteForAll
+            )
+        }
+
+        let matchingLocal = messages.compactMap { message -> (id: Int, isOwn: Bool)? in
+            guard let id = Int(message.id), selectedIds.contains(id) else { return nil }
+            return (id, message.user.isCurrentUser)
+        }
+        guard !matchingLocal.isEmpty else {
+            return PendingDeleteSelection(messageIds: [], canDeleteForAll: false)
+        }
+        return PendingDeleteSelection(
+            messageIds: matchingLocal.map(\.id),
+            canDeleteForAll: matchingLocal.allSatisfy(\.isOwn)
+        )
+    }
     
     private struct RemoteMergeResult {
         let messages: [QMSMessage]
