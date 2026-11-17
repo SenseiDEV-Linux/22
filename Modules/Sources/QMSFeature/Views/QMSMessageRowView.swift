@@ -242,6 +242,7 @@ struct QMSMessageRowView: View {
                     .padding(.vertical, 8)
             }
         }
+        .frame(width: hasAttachments ? attachmentsContainerWidth : nil)
         .foregroundStyle(bubbleTextColor)
         .background {
             RoundedRectangle(cornerRadius: cornerRadius)
