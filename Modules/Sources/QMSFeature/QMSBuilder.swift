@@ -13,9 +13,11 @@ import UIKit
 public struct QMSBuilder {
     
     private let text: String
+    private let tintColor: UIColor
     
-    public init(text: String) {
+    public init(text: String, tintColor: UIColor = .systemBlue) {
         self.text = text
+        self.tintColor = tintColor
     }
     
     // TODO: Change to full BBBuilder with container nodes later
@@ -49,7 +51,7 @@ public struct QMSBuilder {
 
             let icon = NSTextAttachment()
             icon.image = UIImage(systemName: fileSymbolName(for: fileName))?
-                .withTintColor(.systemBlue, renderingMode: .alwaysOriginal)
+                .withTintColor(tintColor, renderingMode: .alwaysOriginal)
             icon.bounds = CGRect(x: 0, y: -3, width: 17, height: 17)
 
             let fileCard = NSMutableAttributedString(attachment: icon)

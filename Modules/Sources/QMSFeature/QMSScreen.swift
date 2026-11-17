@@ -197,7 +197,9 @@ public struct QMSScreen: View {
             .linkPreviewsDisabled()
             .setAvailableInputs([.text])
             .chatTheme(theme)
+            .tint(tintColor)
             .environment(\.openURL, openURL)
+            .id(QMSChatThemeID(tintColor: tintColor, mainBackground: backgroundColors.primary))
         )
     }
 
@@ -230,6 +232,7 @@ public struct QMSScreen: View {
                 onTapAttachment: showAttachment
             )
             .chatTheme(chatTheme)
+            .tint(tintColor)
             .environment(\.openURL, openURL)
             .animation(.easeInOut(duration: 0.18), value: isSelecting)
             .animation(.easeInOut(duration: 0.15), value: isSelected)
@@ -252,14 +255,16 @@ public struct QMSScreen: View {
         ChatTheme(
             colors: ChatTheme.Colors(
                 mainBG: backgroundColors.primary,
+                mainTint: tintColor,
                 messageMyBG: Color(.Background.quaternary),
+                messageReadStatus: tintColor,
                 messageMyText: Color(.Labels.primary),
                 messageMyTimeText: Color(.systemGray),
                 messageFriendBG: Color(.Background.quaternary),
                 messageFriendText: Color(.Labels.primary),
                 messageFriendTimeText: Color(.systemGray),
-                statusGray: Color(.Theme.primary),
-                sendButtonBackground: Color(.Theme.primary)
+                statusGray: tintColor,
+                sendButtonBackground: tintColor
             )
         )
     }
@@ -444,7 +449,7 @@ public struct QMSScreen: View {
                     ))
                 } label: {
                     Circle()
-                        .fill(Color(.Theme.primary))
+                        .fill(tintColor)
                         .frame(width: 44, height: 44)
                         .overlay {
                             if store.isSending {
@@ -469,6 +474,11 @@ public struct QMSScreen: View {
         .animation(.default, value: store.draftText)
         .bind($store.focus, to: $focusedInput)
     }
+}
+
+private struct QMSChatThemeID: Hashable {
+    let tintColor: Color
+    let mainBackground: Color
 }
 
 private struct QMSFilePickerPresenter: UIViewControllerRepresentable {

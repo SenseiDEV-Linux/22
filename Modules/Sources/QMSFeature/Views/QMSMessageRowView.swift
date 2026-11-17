@@ -281,7 +281,7 @@ struct QMSMessageRowView: View {
     }
 
     private var styledMessageText: some View {
-        var attributed = QMSBuilder(text: message.text).build()
+        var attributed = QMSBuilder(text: message.text, tintColor: UIColor(tintColor)).build()
         for (link, range) in attributed.runs[\.link] where link != nil {
             attributed[range].underlineStyle = Text.LineStyle.single
         }
