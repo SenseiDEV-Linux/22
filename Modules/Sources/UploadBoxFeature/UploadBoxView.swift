@@ -146,7 +146,7 @@ public struct UploadBoxView: View {
                         .padding(.leading, 10)
                         .padding(.trailing, 5)
                         .padding(.vertical, 5)
-                        .background(backgroundColors.tertiary, in: Capsule())
+                        .background(Color(.Background.quaternary), in: Capsule())
                         .overlay {
                             Capsule()
                                 .stroke(Color(.Separator.secondary), lineWidth: 1)
