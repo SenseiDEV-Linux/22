@@ -19,7 +19,7 @@ extension QMSFeature {
         var body: some Reducer<State, Action> {
             Reduce<State, Action> { _, action in
                 switch action {
-                case .view(.onAppear), .view(.attachmentButtonTapped), .internal, .delegate, .binding, .alert, .upload:
+                case .view(.onAppear), .view(.attachmentButtonTapped), .bbPanel, .internal, .delegate, .binding, .alert, .upload:
                     break
                     
                 case let .view(.sendMessageButtonTapped(draft)):

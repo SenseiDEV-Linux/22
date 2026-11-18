@@ -204,7 +204,12 @@ private struct SelectableTextView: UIViewRepresentable {
     
     func updateUIView(_ uiView: UITextView, context: Context) {
         if content.isEmpty {
-            if !uiView.isFirstResponder {
+            if uiView.isFirstResponder {
+                // Text was cleared programmatically (e.g. message sent) while the field is focused
+                if !uiView.text.isEmpty {
+                    uiView.text = ""
+                }
+            } else {
                 let placeholderText = String(localized: placeholder)
 
                 if uiView.text != placeholderText {

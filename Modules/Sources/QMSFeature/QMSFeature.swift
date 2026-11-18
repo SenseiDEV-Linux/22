@@ -16,6 +16,7 @@ import NotificationsClient
 import TCAExtensions
 import ExyteChat
 import UploadBoxFeature
+import BBPanelFeature
 
 @Reducer
 public struct QMSFeature: Reducer, Sendable {
@@ -44,6 +45,7 @@ public struct QMSFeature: Reducer, Sendable {
         public var chat: QMSChat?
         public var messages: [Message] = []
         var upload = UploadBoxFeature.State(type: .qms)
+        var bbPanel = BBPanelFeature.State(for: .qms)
         
         var hasMoreOlderMessages = true
         var isLoadingMore = false
@@ -51,6 +53,7 @@ public struct QMSFeature: Reducer, Sendable {
         
         var draftText = ""
         var draftSnapshot = ""
+        var draftSelection: NSRange?
         
         var uploadedAttachmentIDs: [Int] {
             upload.files.compactMap { file in
@@ -82,6 +85,7 @@ public struct QMSFeature: Reducer, Sendable {
     public enum Action: BindableAction, ViewAction {
         case binding(BindingAction<State>)
         case upload(UploadBoxFeature.Action)
+        case bbPanel(BBPanelFeature.Action)
         
         case alert(PresentationAction<Alert>)
         public enum Alert {
@@ -128,9 +132,33 @@ public struct QMSFeature: Reducer, Sendable {
             UploadBoxFeature()
         }
 
+        Scope(\.bbPanel, action: \.bbPanel) {
+            BBPanelFeature()
+        }
+
         Reduce<State, Action> { state, action in
             switch action {
             case .alert, .delegate, .upload:
+                return .none
+
+            case let .bbPanel(.delegate(.tagTapped(tag))):
+                let text = state.draftText as NSString
+                var range = state.draftSelection ?? NSRange(location: text.length, length: 0)
+                if range.location == NSNotFound || range.location + range.length > text.length {
+                    range = NSRange(location: text.length, length: 0)
+                }
+                let selectedText = text.substring(with: range)
+                state.draftText = text.replacingCharacters(
+                    in: range,
+                    with: tag.0 + selectedText + tag.1
+                )
+                state.draftSelection = NSRange(
+                    location: range.location + (tag.0 as NSString).length,
+                    length: (selectedText as NSString).length
+                )
+                return .none
+
+            case .bbPanel:
                 return .none
                 
             case .view(.onAppear):
@@ -162,6 +190,7 @@ public struct QMSFeature: Reducer, Sendable {
                 else { return .none }
                 
                 state.draftText = ""
+                state.draftSelection = nil
                 state.draftSnapshot = draftMessage.text
                 state.isSending = true
                 
@@ -196,6 +225,7 @@ public struct QMSFeature: Reducer, Sendable {
             case let .internal(.messageSendError(error)):
                 state.isSending = false
                 state.draftText = state.draftSnapshot
+                state.draftSelection = nil
                 state.draftSnapshot = ""
                 state.alert = .somethingWentWrong
                 analyticsClient.capture(error)

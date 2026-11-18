@@ -509,6 +509,7 @@ let project = Project(
                 dependencies: [
                     .Internal.APIClient,
                     .Internal.AnalyticsClient,
+                    .Internal.BBPanelFeature,
                     .Internal.BBBuilder,
                     .Internal.Models,
                     .Internal.NotificationsClient,

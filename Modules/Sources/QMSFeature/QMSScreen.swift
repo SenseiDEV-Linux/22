@@ -11,6 +11,7 @@ import SharedUI
 import SFSafeSymbols
 import ExyteChat
 import UploadBoxFeature
+import BBPanelFeature
 
 @ViewAction(for: QMSFeature.self)
 public struct QMSScreen: View {
@@ -19,6 +20,8 @@ public struct QMSScreen: View {
     
     @Perception.Bindable public var store: StoreOf<QMSFeature>
     @Environment(\.tintColor) private var tintColor
+
+    @FocusState private var focus: QMSComposerField?
     
     // MARK: - Init
     
@@ -101,7 +104,7 @@ public struct QMSScreen: View {
             UploadBoxView(store: store.scope(\.upload, action: \.upload))
                 .disabled(store.isSending)
             
-            HStack(spacing: 8) {
+            HStack(alignment: .bottom, spacing: 8) {
                 #if DEBUG
                 if ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1" {
                     Button(String("+")) { text.wrappedValue += "text" }
@@ -122,9 +125,15 @@ public struct QMSScreen: View {
                 .accessibilityLabel(Text("qms.attachments.add", bundle: .module))
                 .disabled(store.isSending || store.upload.isAnyFileUploading)
 
-                TextField(String(""), text: text, prompt: Text("qms.textfield.placeholder", bundle: .module))
-                    .padding()
-                    .background(Color(.Background.quaternary), in: .rect(cornerRadius: 16))
+                SharedUI.Field(
+                    content: text,
+                    placeholder: "qms.textfield.placeholder",
+                    focusEqual: .message,
+                    focus: $focus,
+                    minHeight: 44,
+                    selection: $store.draftSelection
+                )
+                .disabled(store.isSending)
 
                 Button {
                     send(.sendMessageButtonTapped(
@@ -150,13 +159,23 @@ public struct QMSScreen: View {
                 .disabled(!store.canSendMessage)
                 .accessibilityLabel(Text("qms.message.send", bundle: .module))
             }
+
+            if focus == .message {
+                BBPanelView(store: store.scope(\.bbPanel, action: \.bbPanel))
+                    .transition(.opacity)
+            }
         }
         .padding()
         .animation(.default, value: store.isSending)
         .animation(.default, value: store.canSendMessage)
+        .animation(.default, value: focus == .message)
         .animation(.default, value: text.wrappedValue)
         .bind(text, to: $store.draftText)
     }
+}
+
+private enum QMSComposerField: Hashable {
+    case message
 }
 
 // MARK: - Previews
